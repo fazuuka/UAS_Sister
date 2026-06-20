@@ -131,6 +131,8 @@ async def publish_events(
 
     service = EventService(db, redis)
 
+    result = await service.process_batch(events)
+
     pipeline = redis.pipeline()
     for event in events:
         pipeline.xadd(
@@ -140,7 +142,6 @@ async def publish_events(
         )
     await pipeline.execute()
 
-    result = await service.process_batch(events)
 
     logger.info(
         f"Published batch: accepted={result['accepted']} "
@@ -148,7 +149,16 @@ async def publish_events(
         f"invalid={result['invalid']}"
     )
 
-    return PublishResponse(**result)
+    # Map result to PublishResponse schema
+    total = result['accepted'] + result['duplicate_dropped'] + result['invalid']
+    response_data = {
+        "accepted": result['accepted'],
+        "duplicate_dropped": result['duplicate_dropped'],
+        "queued": True,  # Events were queued to Redis Stream
+        "message": f"Processed {total} events: {result['accepted']} accepted, {result['duplicate_dropped']} duplicates, {result['invalid']} invalid"
+    }
+    
+    return PublishResponse(**response_data)
 
 
 @app.get("/events", response_model=list[EventResponse])

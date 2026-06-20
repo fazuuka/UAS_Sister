@@ -46,7 +46,7 @@ class BatchPublishRequest(BaseModel):
 
 class PublishResponse(BaseModel):
     accepted: int
-    duplicate_hint: int
+    duplicate_dropped: int
     queued: bool
     message: str
 
@@ -55,9 +55,9 @@ class StatsResponse(BaseModel):
     received: int
     unique_processed: int
     duplicate_dropped: int
-    topics: list[str]
+    topics: list[str]   
     uptime_seconds: float
-    workers_active: int
+    workers_active: int = 0
 
 
 # Legacy aliases kept for the existing application imports.

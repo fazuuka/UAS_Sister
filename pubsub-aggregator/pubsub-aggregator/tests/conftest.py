@@ -18,12 +18,54 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 import pytest_asyncio
+import redis.asyncio as aioredis
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8080")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost/aggregator")
 
 
 @pytest_asyncio.fixture
-async def client():
+async def setup_clean_state():
+    """
+    Fixture yang membersihkan Redis dan reset database sebelum setiap test.
+    Memastikan setiap test memulai dengan state bersih.
+    """
+    # Clear Redis cache
+    redis = await aioredis.from_url(REDIS_URL, decode_responses=False)
+    try:
+        await redis.flushdb()
+    finally:
+        await redis.aclose()
+    
+    # Reset database stats dan events
+    engine = create_async_engine(DATABASE_URL, echo=False)
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    
+    async with async_session() as session:
+        try:
+            # Clear processed_events and audit_log
+            await session.execute(text("DELETE FROM processed_events"))
+            await session.execute(text("DELETE FROM audit_log"))
+            await session.execute(text("DELETE FROM outbox"))
+            
+            # Reset aggregator_stats to initial state
+            await session.execute(text("""
+                UPDATE aggregator_stats 
+                SET received = 0, unique_processed = 0, duplicate_dropped = 0
+                WHERE id = 1
+            """))
+            await session.commit()
+        finally:
+            await session.close()
+    
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(setup_clean_state):
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as c:
         yield c
 

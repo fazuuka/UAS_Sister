@@ -115,7 +115,7 @@ class EventService:
                     await session.execute(
                         text("""
                             UPDATE aggregator_stats
-                            SET duplicate_dropped = duplicate_dropped + 1,
+                                SET duplicate_dropped = duplicate_dropped + 1,
                                 updated_at = NOW()
                             WHERE id = 1
                         """)
@@ -190,27 +190,44 @@ class EventService:
 
     async def process_batch(self, events: list[Event]) -> dict[str, Any]:
         """
-        Batch processing: setiap event diproses individual (idempotent).
-        Partial commit diperbolehkan — setiap event atomic sendiri.
-        Kebijakan: event valid diproses, event invalid dilewati dan dilaporkan.
+        Batch processing dengan handling duplikat sinkron intra-batch 
+        untuk mencegah race condition di level cache/asyncio.gather.
         """
         accepted = 0
         duplicated = 0
         errors = 0
         accepted_ids = []
 
-        tasks = [self.process_event(event) for event in events]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 1. Filter duplikat yang berada di dalam BATCH yang sama secara sinkron
+        unique_events_in_batch = []
+        seen_keys = set()
 
-        for event, result in zip(events, results):
-            if isinstance(result, Exception):
-                errors += 1
-                logger.error(f"Batch error for event {event.event_id}: {result}")
-            elif result["status"] == "accepted":
-                accepted += 1
-                accepted_ids.append(event.event_id)
-            else:
+        for event in events:
+            composite_key = (event.topic, event.event_id)
+            if composite_key in seen_keys:
+                # Duplikat terdeteksi di dalam batch yang sama!
                 duplicated += 1
+                await self._increment_stat("received")
+                await self._increment_stat("duplicate_dropped")
+                await self._write_audit(event.event_id, event.topic, "duplicate_dropped")
+            else:
+                seen_keys.add(composite_key)
+                unique_events_in_batch.append(event)
+
+        # 2. Proses event yang benar-benar unik secara konkuren
+        if unique_events_in_batch:
+            tasks = [self.process_event(event) for event in unique_events_in_batch]
+            results = await asyncio.gather(*tasks, return_exceptions=False)
+
+            for event, result in zip(unique_events_in_batch, results):
+                if isinstance(result, Exception):
+                    errors += 1
+                    logger.error(f"Batch error for event {event.event_id}: {result}")
+                elif result["status"] == "accepted":
+                    accepted += 1
+                    accepted_ids.append(event.event_id)
+                else:
+                    duplicated += 1
 
         return {
             "accepted": accepted,
