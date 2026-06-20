@@ -195,5 +195,5 @@ docker compose down -v         # Stop + hapus semua volume (reset total)
 
 ## 5. Link Video Demo
 
- `https://youtu.be/XXXXXXXXXXX`
+ `https://youtu.be/Wst57eeQ2eY`
 
